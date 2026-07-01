@@ -146,6 +146,7 @@ class WeekBoardView extends ItemView {
     this.renderToolbar(root);
 
     const tasks = await this.readTasks();
+    this.currentTasks = tasks;
     const dates = Platform.isMobile
       ? [this.selectedDate]
       : Array.from({ length: 7 }, (_, index) => addDays(this.weekStart, index));
@@ -266,7 +267,10 @@ class WeekBoardView extends ItemView {
   }
 
   renderTask(list, task) {
-    const card = list.createDiv({ cls: "rm-task", attr: { draggable: "true" } });
+    const card = list.createDiv({
+      cls: "rm-task",
+      attr: { draggable: Platform.isMobile ? "false" : "true" },
+    });
     card.dataset.path = task.path;
     card.toggleClass("is-done", task.done);
     card.ondragstart = () => {
@@ -296,6 +300,9 @@ class WeekBoardView extends ItemView {
   }
 
   registerTouchDrag(card, task) {
+    card.addEventListener("contextmenu", (event) => {
+      if (this.touchDrag?.active) event.preventDefault();
+    });
     card.addEventListener("pointerdown", (event) => {
       if (event.pointerType !== "touch" || event.target.closest("input, button")) return;
       this.prepareTouchDrag(card, task, event);
@@ -310,6 +317,8 @@ class WeekBoardView extends ItemView {
       pointerId: downEvent.pointerId,
       startX: downEvent.clientX,
       startY: downEvent.clientY,
+      initialDate: toDateKey(this.selectedDate),
+      targetDate: toDateKey(this.selectedDate),
       active: false,
       arrowArmed: true,
       arrowTimer: null,
@@ -329,6 +338,11 @@ class WeekBoardView extends ItemView {
     const activate = () => {
       if (this.touchDrag !== state) return;
       state.active = true;
+      try {
+        card.setPointerCapture(state.pointerId);
+      } catch {
+        // Some mobile WebViews do not expose pointer capture.
+      }
       const rect = card.getBoundingClientRect();
       const ghost = card.cloneNode(true);
       ghost.addClass("rm-touch-drag-ghost");
@@ -366,13 +380,14 @@ class WeekBoardView extends ItemView {
       }
       event.preventDefault();
       this.suppressClickUntil = Date.now() + 500;
-      const group = document
-        .elementFromPoint(event.clientX, event.clientY)
-        ?.closest(".rm-project-group");
+      const group = this.findDropElementAt(event.clientX, event.clientY);
       const targetDate = group?.dataset.date;
       const targetProject = group?.dataset.project;
       this.cancelTouchDrag();
-      if (!targetDate || !targetProject) return;
+      if (!targetDate || !targetProject) {
+        if (state.targetDate !== state.initialDate) await this.render();
+        return;
+      }
       await this.moveTask(task.path, targetDate, targetProject);
       this.selectedDate = fromDateKey(targetDate);
       new Notice(`Задача перенесена: ${formatShortDate(this.selectedDate)}, ${targetProject}`);
@@ -380,7 +395,10 @@ class WeekBoardView extends ItemView {
     };
 
     const cancel = (event) => {
-      if (event.pointerId === state.pointerId) this.cancelTouchDrag();
+      if (event.pointerId !== state.pointerId) return;
+      const dateChanged = state.targetDate !== state.initialDate;
+      this.cancelTouchDrag();
+      if (dateChanged) this.render();
     };
 
     state.holdTimer = window.setTimeout(activate, 320);
@@ -397,6 +415,7 @@ class WeekBoardView extends ItemView {
     if (state.arrowTimer) window.clearTimeout(state.arrowTimer);
     state.cleanup?.();
     state.ghost?.remove();
+    this.contentEl.querySelector(".rm-mobile-project-drop-sheet")?.remove();
     state.card?.removeClass("is-touch-dragging");
     this.contentEl.removeClass("is-touch-dragging");
     this.contentEl
@@ -406,11 +425,12 @@ class WeekBoardView extends ItemView {
   }
 
   updateTouchDropTarget(state, clientX, clientY) {
-    const target = document.elementFromPoint(clientX, clientY);
-    const arrow = target?.closest("[data-mobile-day-direction]");
-    const group = target?.closest(".rm-project-group");
+    const arrow = this.findElementByRect("[data-mobile-day-direction]", clientX, clientY);
+    const group = this.findDropElementAt(clientX, clientY);
 
-    this.contentEl.querySelectorAll(".is-drop-target").forEach((element) => element.removeClass("is-drop-target"));
+    this.contentEl
+      .querySelectorAll(".is-drop-target")
+      .forEach((element) => element.removeClass("is-drop-target"));
     if (group) group.addClass("is-drop-target");
 
     this.contentEl.querySelectorAll(".is-drag-hover").forEach((element) => element.removeClass("is-drag-hover"));
@@ -430,19 +450,76 @@ class WeekBoardView extends ItemView {
       state.arrowArmed = false;
       state.navigating = true;
       this.selectedDate = addDays(this.selectedDate, direction);
-      await this.render();
-      if (this.touchDrag === state) {
-        this.contentEl.addClass("is-touch-dragging");
-        if (navigator.vibrate) navigator.vibrate(12);
-      }
+      state.targetDate = toDateKey(this.selectedDate);
+      this.showMobileProjectDropSheet(state.targetDate);
+      const title = this.contentEl.querySelector(".rm-toolbar__title");
+      if (title) title.textContent = formatLongDate(this.selectedDate);
+      if (navigator.vibrate) navigator.vibrate(12);
       state.navigating = false;
     }, 450);
   }
 
+  findElementByRect(selector, clientX, clientY) {
+    return [...this.contentEl.querySelectorAll(selector)].find((element) => {
+      const rect = element.getBoundingClientRect();
+      return (
+        clientX >= rect.left &&
+        clientX <= rect.right &&
+        clientY >= rect.top &&
+        clientY <= rect.bottom
+      );
+    });
+  }
+
+  findDropElementAt(clientX, clientY) {
+    const sheet = this.contentEl.querySelector(".rm-mobile-project-drop-sheet");
+    if (sheet) {
+      return this.findElementByRect(".rm-mobile-project-drop-target", clientX, clientY);
+    }
+    return this.findElementByRect(".rm-project-group", clientX, clientY);
+  }
+
+  showMobileProjectDropSheet(dateKey) {
+    this.contentEl.querySelector(".rm-mobile-project-drop-sheet")?.remove();
+    const boardRect = this.contentEl.querySelector(".rm-board-grid")?.getBoundingClientRect();
+    const contentRect = this.contentEl.getBoundingClientRect();
+    const sheet = this.contentEl.createDiv({ cls: "rm-mobile-project-drop-sheet" });
+    sheet.style.top = `${Math.max(boardRect?.top || contentRect.top + 100, contentRect.top + 90)}px`;
+    sheet.style.left = `${contentRect.left + 8}px`;
+    sheet.style.right = `${Math.max(window.innerWidth - contentRect.right + 8, 8)}px`;
+
+    const date = fromDateKey(dateKey);
+    sheet.createDiv({
+      cls: "rm-mobile-project-drop-sheet__date",
+      text: `Перенести на ${formatLongDate(date)}`,
+    });
+
+    for (const project of [...PROJECTS, NO_PROJECT]) {
+      const tasks = (this.currentTasks || []).filter(
+        (task) => task.scheduled === dateKey && task.project === project
+      );
+      const target = sheet.createDiv({ cls: "rm-mobile-project-drop-target" });
+      target.dataset.date = dateKey;
+      target.dataset.project = project;
+      const head = target.createDiv({ cls: "rm-project-group__head" });
+      head.createSpan({ cls: `rm-project-dot rm-project-dot--${projectClass(project)}` });
+      head.createSpan({ cls: "rm-project-title", text: project });
+      head.createSpan({ cls: "rm-project-count", text: String(tasks.length) });
+      if (tasks.length) {
+        target.createDiv({
+          cls: "rm-mobile-project-drop-target__tasks",
+          text: tasks.map((task) => task.title).join(" · "),
+        });
+      }
+    }
+  }
+
   autoScrollTouchDrag(clientY) {
     const edge = 72;
-    if (clientY < edge) this.contentEl.scrollBy({ top: -12 });
-    else if (clientY > window.innerHeight - edge) this.contentEl.scrollBy({ top: 12 });
+    const scrollTarget =
+      this.contentEl.querySelector(".rm-mobile-project-drop-sheet") || this.contentEl;
+    if (clientY < edge) scrollTarget.scrollBy({ top: -12 });
+    else if (clientY > window.innerHeight - edge) scrollTarget.scrollBy({ top: 12 });
   }
 
   async readTasks() {
