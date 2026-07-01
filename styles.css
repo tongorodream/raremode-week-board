@@ -218,10 +218,6 @@
   box-shadow: none;
 }
 
-.rm-mobile-drop-zones {
-  display: none;
-}
-
 @media (max-width: 700px) {
   .rm-week-board {
     padding: 8px;
@@ -322,63 +318,35 @@
     padding: 10px;
   }
 
-  .rm-mobile-drop-zones {
-    bottom: max(12px, env(safe-area-inset-bottom));
-    display: grid;
-    gap: 12px;
-    grid-template-columns: 1fr 1fr;
-    left: 12px;
-    opacity: 0;
-    pointer-events: none;
-    position: fixed;
-    right: 12px;
-    transform: translateY(12px);
-    transition: opacity 150ms ease, transform 150ms ease;
-    z-index: 100;
+  .is-touch-dragging [data-mobile-day-direction] {
+    border-color: var(--rm-border);
   }
 
-  .is-touch-dragging .rm-mobile-drop-zones {
-    opacity: 1;
-    transform: translateY(0);
-  }
-
-  .rm-mobile-drop-zone {
-    align-items: center;
-    background: var(--background-primary);
-    border: 2px solid var(--rm-border);
-    border-radius: 8px;
-    color: var(--text-muted);
-    display: flex;
-    font-size: 13px;
-    font-weight: 700;
-    gap: 6px;
-    justify-content: center;
-    min-height: 56px;
-    padding: 8px;
-  }
-
-  .rm-mobile-drop-zone.is-active {
+  [data-mobile-day-direction].is-drag-hover {
     background: color-mix(in srgb, var(--rm-accent) 18%, var(--background-primary));
     border-color: var(--rm-accent);
     color: var(--text-normal);
   }
 
-  .rm-mobile-drop-zone__icon {
-    align-items: center;
-    display: inline-flex;
-  }
-
   .rm-task.is-touch-dragging {
     border-color: var(--rm-accent);
-    opacity: 0.82;
-    position: relative;
-    z-index: 110;
+    opacity: 0.28;
   }
 }
 
+.rm-touch-drag-ghost {
+  background: var(--background-primary);
+  border: 2px solid var(--rm-accent);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 28%);
+  opacity: 0.92;
+  pointer-events: none;
+  position: fixed;
+  transform-origin: top left;
+  z-index: 10000;
+}
+
 @media (prefers-reduced-motion: reduce) {
-  .rm-task,
-  .rm-mobile-drop-zones {
+  .rm-task {
     transition: none;
   }
 }

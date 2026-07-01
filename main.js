@@ -124,6 +124,7 @@ class WeekBoardView extends ItemView {
 
   async onClose() {
     if (this.refreshTimer) window.clearTimeout(this.refreshTimer);
+    this.cancelTouchDrag();
   }
 
   registerVaultEvents() {
@@ -155,7 +156,7 @@ class WeekBoardView extends ItemView {
       this.renderDay(board, date, tasks.filter((task) => task.scheduled === toDateKey(date)));
     }
 
-    if (Platform.isMobile) this.renderMobileDropZones(root);
+    if (this.touchDrag) root.addClass("is-touch-dragging");
   }
 
   renderToolbar(root) {
@@ -166,6 +167,7 @@ class WeekBoardView extends ItemView {
       cls: "rm-icon-button",
       attr: { "aria-label": Platform.isMobile ? "Предыдущий день" : "Предыдущая неделя" },
     });
+    if (Platform.isMobile) prev.dataset.mobileDayDirection = "-1";
     setIcon(prev, "chevron-left");
     prev.onclick = async () => {
       if (Platform.isMobile) this.selectedDate = addDays(this.selectedDate, -1);
@@ -184,6 +186,7 @@ class WeekBoardView extends ItemView {
       cls: "rm-icon-button",
       attr: { "aria-label": Platform.isMobile ? "Следующий день" : "Следующая неделя" },
     });
+    if (Platform.isMobile) next.dataset.mobileDayDirection = "1";
     setIcon(next, "chevron-right");
     next.onclick = async () => {
       if (Platform.isMobile) this.selectedDate = addDays(this.selectedDate, 1);
@@ -292,97 +295,154 @@ class WeekBoardView extends ItemView {
     };
   }
 
-  renderMobileDropZones(root) {
-    const zones = root.createDiv({ cls: "rm-mobile-drop-zones", attr: { "aria-hidden": "true" } });
-    const previous = zones.createDiv({ cls: "rm-mobile-drop-zone is-previous" });
-    setIcon(previous.createSpan({ cls: "rm-mobile-drop-zone__icon" }), "chevron-left");
-    previous.createSpan({ text: "На день назад" });
-    const next = zones.createDiv({ cls: "rm-mobile-drop-zone is-next" });
-    next.createSpan({ text: "На день вперед" });
-    setIcon(next.createSpan({ cls: "rm-mobile-drop-zone__icon" }), "chevron-right");
-  }
-
   registerTouchDrag(card, task) {
-    let holdTimer = null;
-    let startX = 0;
-    let startY = 0;
-    let active = false;
-
-    const reset = () => {
-      if (holdTimer) window.clearTimeout(holdTimer);
-      holdTimer = null;
-      active = false;
-      card.style.removeProperty("transform");
-      card.removeClass("is-touch-dragging");
-      this.contentEl.removeClass("is-touch-dragging");
-      this.touchDrag = null;
-    };
-
     card.addEventListener("pointerdown", (event) => {
       if (event.pointerType !== "touch" || event.target.closest("input, button")) return;
-      startX = event.clientX;
-      startY = event.clientY;
-      holdTimer = window.setTimeout(() => {
-        active = true;
-        this.touchDrag = task;
-        card.addClass("is-touch-dragging");
-        this.contentEl.addClass("is-touch-dragging");
-        if (navigator.vibrate) navigator.vibrate(20);
-      }, 320);
+      this.prepareTouchDrag(card, task, event);
     });
+  }
 
-    card.addEventListener(
-      "pointermove",
-      (event) => {
-        const dx = event.clientX - startX;
-        const dy = event.clientY - startY;
-        if (!active && Math.hypot(dx, dy) > 10) {
-          if (holdTimer) window.clearTimeout(holdTimer);
-          holdTimer = null;
-          return;
-        }
-        if (!active) return;
-        event.preventDefault();
-        card.style.transform = `translate3d(${dx}px, ${dy}px, 0)`;
-        this.updateMobileDropTarget(event.clientX);
-      },
-      { passive: false }
-    );
+  prepareTouchDrag(card, task, downEvent) {
+    this.cancelTouchDrag();
+    const state = {
+      task,
+      card,
+      pointerId: downEvent.pointerId,
+      startX: downEvent.clientX,
+      startY: downEvent.clientY,
+      active: false,
+      arrowArmed: true,
+      arrowTimer: null,
+      navigating: false,
+      ghost: null,
+      cleanup: null,
+      holdTimer: null,
+    };
+
+    const cleanup = () => {
+      window.removeEventListener("pointermove", move, true);
+      window.removeEventListener("pointerup", finish, true);
+      window.removeEventListener("pointercancel", cancel, true);
+    };
+    state.cleanup = cleanup;
+
+    const activate = () => {
+      if (this.touchDrag !== state) return;
+      state.active = true;
+      const rect = card.getBoundingClientRect();
+      const ghost = card.cloneNode(true);
+      ghost.addClass("rm-touch-drag-ghost");
+      ghost.style.left = `${rect.left}px`;
+      ghost.style.top = `${rect.top}px`;
+      ghost.style.width = `${rect.width}px`;
+      ghost.style.height = `${rect.height}px`;
+      document.body.appendChild(ghost);
+      state.ghost = ghost;
+      card.addClass("is-touch-dragging");
+      this.contentEl.addClass("is-touch-dragging");
+      if (navigator.vibrate) navigator.vibrate(20);
+    };
+
+    const move = (event) => {
+      if (event.pointerId !== state.pointerId || this.touchDrag !== state) return;
+      const dx = event.clientX - state.startX;
+      const dy = event.clientY - state.startY;
+      if (!state.active && Math.hypot(dx, dy) > 10) {
+        this.cancelTouchDrag();
+        return;
+      }
+      if (!state.active) return;
+      event.preventDefault();
+      state.ghost?.style.setProperty("transform", `translate3d(${dx}px, ${dy}px, 0)`);
+      this.updateTouchDropTarget(state, event.clientX, event.clientY);
+      this.autoScrollTouchDrag(event.clientY);
+    };
 
     const finish = async (event) => {
-      if (!active) {
-        reset();
+      if (event.pointerId !== state.pointerId || this.touchDrag !== state) return;
+      if (!state.active) {
+        this.cancelTouchDrag();
         return;
       }
       event.preventDefault();
-      const direction = this.mobileDropDirection(event.clientX);
       this.suppressClickUntil = Date.now() + 500;
-      reset();
-      if (!direction) return;
-      const targetDate = addDays(fromDateKey(task.scheduled), direction);
-      await this.moveTask(task.path, toDateKey(targetDate), task.project);
-      this.selectedDate = targetDate;
-      new Notice(direction < 0 ? "Задача перенесена на день назад" : "Задача перенесена на день вперед");
+      const group = document
+        .elementFromPoint(event.clientX, event.clientY)
+        ?.closest(".rm-project-group");
+      const targetDate = group?.dataset.date;
+      const targetProject = group?.dataset.project;
+      this.cancelTouchDrag();
+      if (!targetDate || !targetProject) return;
+      await this.moveTask(task.path, targetDate, targetProject);
+      this.selectedDate = fromDateKey(targetDate);
+      new Notice(`Задача перенесена: ${formatShortDate(this.selectedDate)}, ${targetProject}`);
       await this.render();
     };
 
-    card.addEventListener("pointerup", finish);
-    card.addEventListener("pointercancel", reset);
+    const cancel = (event) => {
+      if (event.pointerId === state.pointerId) this.cancelTouchDrag();
+    };
+
+    state.holdTimer = window.setTimeout(activate, 320);
+    this.touchDrag = state;
+    window.addEventListener("pointermove", move, { passive: false, capture: true });
+    window.addEventListener("pointerup", finish, { passive: false, capture: true });
+    window.addEventListener("pointercancel", cancel, { capture: true });
   }
 
-  mobileDropDirection(clientX) {
-    const width = window.innerWidth;
-    if (clientX <= width * 0.38) return -1;
-    if (clientX >= width * 0.62) return 1;
-    return 0;
+  cancelTouchDrag() {
+    const state = this.touchDrag;
+    if (!state) return;
+    if (state.holdTimer) window.clearTimeout(state.holdTimer);
+    if (state.arrowTimer) window.clearTimeout(state.arrowTimer);
+    state.cleanup?.();
+    state.ghost?.remove();
+    state.card?.removeClass("is-touch-dragging");
+    this.contentEl.removeClass("is-touch-dragging");
+    this.contentEl
+      .querySelectorAll(".is-drop-target, .is-drag-hover")
+      .forEach((element) => element.removeClass("is-drop-target", "is-drag-hover"));
+    this.touchDrag = null;
   }
 
-  updateMobileDropTarget(clientX) {
-    const direction = this.mobileDropDirection(clientX);
-    const zones = this.contentEl.querySelectorAll(".rm-mobile-drop-zone");
-    zones.forEach((zone) => zone.removeClass("is-active"));
-    if (direction < 0) this.contentEl.querySelector(".rm-mobile-drop-zone.is-previous")?.addClass("is-active");
-    if (direction > 0) this.contentEl.querySelector(".rm-mobile-drop-zone.is-next")?.addClass("is-active");
+  updateTouchDropTarget(state, clientX, clientY) {
+    const target = document.elementFromPoint(clientX, clientY);
+    const arrow = target?.closest("[data-mobile-day-direction]");
+    const group = target?.closest(".rm-project-group");
+
+    this.contentEl.querySelectorAll(".is-drop-target").forEach((element) => element.removeClass("is-drop-target"));
+    if (group) group.addClass("is-drop-target");
+
+    this.contentEl.querySelectorAll(".is-drag-hover").forEach((element) => element.removeClass("is-drag-hover"));
+    if (!arrow) {
+      state.arrowArmed = true;
+      if (state.arrowTimer) window.clearTimeout(state.arrowTimer);
+      state.arrowTimer = null;
+      return;
+    }
+
+    arrow.addClass("is-drag-hover");
+    if (!state.arrowArmed || state.arrowTimer || state.navigating) return;
+    const direction = Number(arrow.dataset.mobileDayDirection);
+    state.arrowTimer = window.setTimeout(async () => {
+      state.arrowTimer = null;
+      if (this.touchDrag !== state || !state.active) return;
+      state.arrowArmed = false;
+      state.navigating = true;
+      this.selectedDate = addDays(this.selectedDate, direction);
+      await this.render();
+      if (this.touchDrag === state) {
+        this.contentEl.addClass("is-touch-dragging");
+        if (navigator.vibrate) navigator.vibrate(12);
+      }
+      state.navigating = false;
+    }, 450);
+  }
+
+  autoScrollTouchDrag(clientY) {
+    const edge = 72;
+    if (clientY < edge) this.contentEl.scrollBy({ top: -12 });
+    else if (clientY > window.innerHeight - edge) this.contentEl.scrollBy({ top: 12 });
   }
 
   async readTasks() {

@@ -7,7 +7,8 @@ An Obsidian view for TaskNotes tasks:
 - previous/next day navigation on mobile;
 - quick task creation inside a project group;
 - completion checkboxes;
-- drag and drop on desktop and touch transfer on mobile.
+- drag and drop on desktop;
+- on mobile, hold a task, hover over a day arrow, then drop it into the required project.
 
 ## Mobile installation with BRAT
 
