@@ -300,20 +300,24 @@ class WeekBoardView extends ItemView {
     card.addEventListener("contextmenu", (event) => {
       if (this.touchDrag?.active) event.preventDefault();
     });
-    card.addEventListener("pointerdown", (event) => {
-      if (event.pointerType !== "touch" || event.target.closest("input, button")) return;
-      this.prepareTouchDrag(card, task, event);
-    });
+    card.addEventListener(
+      "touchstart",
+      (event) => {
+        if (event.touches.length !== 1 || event.target.closest("input, button")) return;
+        this.prepareTouchDrag(card, task, event.touches[0]);
+      },
+      { passive: true }
+    );
   }
 
-  prepareTouchDrag(card, task, downEvent) {
+  prepareTouchDrag(card, task, startTouch) {
     this.cancelTouchDrag();
     const state = {
       task,
       card,
-      pointerId: downEvent.pointerId,
-      startX: downEvent.clientX,
-      startY: downEvent.clientY,
+      touchId: startTouch.identifier,
+      startX: startTouch.clientX,
+      startY: startTouch.clientY,
       initialDate: toDateKey(this.selectedDate),
       targetDate: toDateKey(this.selectedDate),
       active: false,
@@ -327,9 +331,9 @@ class WeekBoardView extends ItemView {
     };
 
     const cleanup = () => {
-      window.removeEventListener("pointermove", move, true);
-      window.removeEventListener("pointerup", finish, true);
-      window.removeEventListener("pointercancel", cancel, true);
+      window.removeEventListener("touchmove", move, true);
+      window.removeEventListener("touchend", finish, true);
+      window.removeEventListener("touchcancel", cancel, true);
     };
     state.cleanup = cleanup;
 
@@ -351,9 +355,10 @@ class WeekBoardView extends ItemView {
     };
 
     const move = (event) => {
-      if (event.pointerId !== state.pointerId || this.touchDrag !== state) return;
-      const dx = event.clientX - state.startX;
-      const dy = event.clientY - state.startY;
+      const touch = this.findTouch(event.touches, state.touchId);
+      if (!touch || this.touchDrag !== state) return;
+      const dx = touch.clientX - state.startX;
+      const dy = touch.clientY - state.startY;
       if (!state.active && Math.hypot(dx, dy) > 10) {
         this.cancelTouchDrag();
         return;
@@ -362,12 +367,13 @@ class WeekBoardView extends ItemView {
       event.preventDefault();
       if (Math.hypot(dx, dy) > 8) state.moved = true;
       state.ghost?.style.setProperty("transform", `translate3d(${dx}px, ${dy}px, 0)`);
-      this.updateTouchDropTarget(state, event.clientX, event.clientY);
-      this.autoScrollTouchDrag(event.clientY);
+      this.updateTouchDropTarget(state, touch.clientX, touch.clientY);
+      this.autoScrollTouchDrag(touch.clientY);
     };
 
     const finish = async (event) => {
-      if (event.pointerId !== state.pointerId || this.touchDrag !== state) return;
+      const touch = this.findTouch(event.changedTouches, state.touchId);
+      if (!touch || this.touchDrag !== state) return;
       if (!state.active) {
         this.cancelTouchDrag();
         return;
@@ -378,7 +384,7 @@ class WeekBoardView extends ItemView {
         this.cancelTouchDrag();
         return;
       }
-      const group = this.findDropElementAt(event.clientX, event.clientY);
+      const group = this.findDropElementAt(touch.clientX, touch.clientY);
       const targetDate = group?.dataset.date;
       const targetProject = group?.dataset.project;
       this.cancelTouchDrag();
@@ -394,7 +400,7 @@ class WeekBoardView extends ItemView {
     };
 
     const cancel = (event) => {
-      if (event.pointerId !== state.pointerId) return;
+      if (!this.findTouch(event.changedTouches, state.touchId)) return;
       const dateChanged = state.targetDate !== state.initialDate;
       this.cancelTouchDrag();
       if (dateChanged) this.render();
@@ -402,9 +408,16 @@ class WeekBoardView extends ItemView {
 
     state.holdTimer = window.setTimeout(activate, 320);
     this.touchDrag = state;
-    window.addEventListener("pointermove", move, { passive: false, capture: true });
-    window.addEventListener("pointerup", finish, { passive: false, capture: true });
-    window.addEventListener("pointercancel", cancel, { capture: true });
+    window.addEventListener("touchmove", move, { passive: false, capture: true });
+    window.addEventListener("touchend", finish, { passive: false, capture: true });
+    window.addEventListener("touchcancel", cancel, { capture: true });
+  }
+
+  findTouch(touchList, touchId) {
+    for (let index = 0; index < touchList.length; index += 1) {
+      if (touchList[index].identifier === touchId) return touchList[index];
+    }
+    return null;
   }
 
   cancelTouchDrag() {
@@ -488,10 +501,9 @@ class WeekBoardView extends ItemView {
     sheet.style.right = `${Math.max(window.innerWidth - contentRect.right + 8, 8)}px`;
 
     const date = fromDateKey(dateKey);
-    sheet.createDiv({
-      cls: "rm-mobile-project-drop-sheet__date",
-      text: `Перенести на ${formatLongDate(date)}`,
-    });
+    const dayHeader = sheet.createDiv({ cls: "rm-day__header" });
+    dayHeader.createDiv({ cls: "rm-day__name", text: formatWeekday(date) });
+    dayHeader.createDiv({ cls: "rm-day__date", text: formatShortDate(date) });
 
     for (const project of [...PROJECTS, NO_PROJECT]) {
       const tasks = (this.currentTasks || []).filter(
@@ -504,12 +516,18 @@ class WeekBoardView extends ItemView {
       head.createSpan({ cls: `rm-project-dot rm-project-dot--${projectClass(project)}` });
       head.createSpan({ cls: "rm-project-title", text: project });
       head.createSpan({ cls: "rm-project-count", text: String(tasks.length) });
-      if (tasks.length) {
-        target.createDiv({
-          cls: "rm-mobile-project-drop-target__tasks",
-          text: tasks.map((task) => task.title).join(" · "),
+      const list = target.createDiv({ cls: "rm-task-list" });
+      for (const task of tasks.sort(taskSort)) {
+        const preview = list.createDiv({ cls: "rm-task rm-task--drop-preview" });
+        preview.toggleClass("is-done", task.done);
+        const checkbox = preview.createEl("input", {
+          cls: "rm-task__check",
+          attr: { type: "checkbox", disabled: "true" },
         });
+        checkbox.checked = task.done;
+        preview.createDiv({ cls: "rm-task__title", text: task.title });
       }
+      target.createDiv({ cls: "rm-mobile-project-drop-hint", text: "Отпустить в этот проект" });
     }
   }
 
