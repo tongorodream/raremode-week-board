@@ -267,10 +267,7 @@ class WeekBoardView extends ItemView {
   }
 
   renderTask(list, task) {
-    const card = list.createDiv({
-      cls: "rm-task",
-      attr: { draggable: Platform.isMobile ? "false" : "true" },
-    });
+    const card = list.createDiv({ cls: "rm-task", attr: { draggable: "true" } });
     card.dataset.path = task.path;
     card.toggleClass("is-done", task.done);
     card.ondragstart = () => {
@@ -320,6 +317,7 @@ class WeekBoardView extends ItemView {
       initialDate: toDateKey(this.selectedDate),
       targetDate: toDateKey(this.selectedDate),
       active: false,
+      moved: false,
       arrowArmed: true,
       arrowTimer: null,
       navigating: false,
@@ -338,11 +336,6 @@ class WeekBoardView extends ItemView {
     const activate = () => {
       if (this.touchDrag !== state) return;
       state.active = true;
-      try {
-        card.setPointerCapture(state.pointerId);
-      } catch {
-        // Some mobile WebViews do not expose pointer capture.
-      }
       const rect = card.getBoundingClientRect();
       const ghost = card.cloneNode(true);
       ghost.addClass("rm-touch-drag-ghost");
@@ -367,6 +360,7 @@ class WeekBoardView extends ItemView {
       }
       if (!state.active) return;
       event.preventDefault();
+      if (Math.hypot(dx, dy) > 8) state.moved = true;
       state.ghost?.style.setProperty("transform", `translate3d(${dx}px, ${dy}px, 0)`);
       this.updateTouchDropTarget(state, event.clientX, event.clientY);
       this.autoScrollTouchDrag(event.clientY);
@@ -380,6 +374,10 @@ class WeekBoardView extends ItemView {
       }
       event.preventDefault();
       this.suppressClickUntil = Date.now() + 500;
+      if (!state.moved) {
+        this.cancelTouchDrag();
+        return;
+      }
       const group = this.findDropElementAt(event.clientX, event.clientY);
       const targetDate = group?.dataset.date;
       const targetProject = group?.dataset.project;
@@ -388,6 +386,7 @@ class WeekBoardView extends ItemView {
         if (state.targetDate !== state.initialDate) await this.render();
         return;
       }
+      if (targetDate === task.scheduled && targetProject === task.project) return;
       await this.moveTask(task.path, targetDate, targetProject);
       this.selectedDate = fromDateKey(targetDate);
       new Notice(`Задача перенесена: ${formatShortDate(this.selectedDate)}, ${targetProject}`);
