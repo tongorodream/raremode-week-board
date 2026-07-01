@@ -213,6 +213,10 @@
   width: 100%;
 }
 
+.rm-new-task-form {
+  margin: 0;
+}
+
 .rm-new-task:focus {
   border-color: var(--rm-accent);
   box-shadow: none;

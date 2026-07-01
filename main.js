@@ -249,20 +249,40 @@ class WeekBoardView extends ItemView {
       this.renderTask(list, task);
     }
 
-    const input = group.createEl("input", {
+    const form = group.createEl("form", { cls: "rm-new-task-form" });
+    const input = form.createEl("input", {
       cls: "rm-new-task",
       attr: {
         type: "text",
         placeholder: "Добавить задачу",
         "aria-label": `Добавить задачу: ${project}, ${dateKey}`,
+        enterkeyhint: "done",
+        autocomplete: "off",
       },
     });
-    input.addEventListener("keydown", async (event) => {
-      if (event.key !== "Enter") return;
+    let submitting = false;
+    const submitTask = async (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (submitting) return;
       const title = input.value.trim();
       if (!title) return;
+      submitting = true;
       input.value = "";
+      input.blur();
       await this.createTask(title, dateKey, project);
+    };
+    input.addEventListener("keydown", (event) => {
+      const isEnter = event.key === "Enter" || event.keyCode === 13 || event.which === 13;
+      if (isEnter) void submitTask(event);
+    });
+    input.addEventListener("beforeinput", (event) => {
+      if (event.inputType === "insertLineBreak" || event.inputType === "insertParagraph") {
+        void submitTask(event);
+      }
+    });
+    form.addEventListener("submit", (event) => {
+      void submitTask(event);
     });
   }
 
