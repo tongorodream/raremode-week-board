@@ -17,6 +17,16 @@ const TASKS_FOLDER = "TaskNotes/Tasks";
 const PROJECTS_FOLDER = "TaskNotes/Projects";
 const DEFAULT_PROJECTS = ["RareMod", "Личное", "Parfume", "Traker"];
 const NO_PROJECT = "Без проекта";
+const PROJECT_COLORS = [
+  { name: "Вишнёвый", value: "#9b1c31" },
+  { name: "Зелёный", value: "#22c55e" },
+  { name: "Голубой", value: "#60a5fa" },
+  { name: "Янтарный", value: "#f59e0b" },
+  { name: "Фиолетовый", value: "#a78bfa" },
+  { name: "Бирюзовый", value: "#14b8a6" },
+  { name: "Розовый", value: "#ec4899" },
+  { name: "Оранжевый", value: "#f97316" },
+];
 
 module.exports = class RareModeWeekBoardPlugin extends Plugin {
   async onload() {
@@ -146,7 +156,11 @@ class WeekBoardView extends ItemView {
 
     this.renderToolbar(root);
 
-    this.currentProjects = await this.readProjects();
+    const projects = await this.readProjects();
+    this.currentProjects = projects.map((project) => project.name);
+    this.currentProjectColors = new Map(
+      projects.map((project) => [project.name, project.color])
+    );
     const tasks = await this.readTasks();
     this.currentTasks = tasks;
     const dates = Platform.isMobile
@@ -239,8 +253,17 @@ class WeekBoardView extends ItemView {
     group.dataset.date = dateKey;
 
     const head = group.createDiv({ cls: "rm-project-group__head" });
-    const dot = head.createSpan({ cls: `rm-project-dot rm-project-dot--${projectClass(project)}` });
-    dot.style.backgroundColor = projectColor(project);
+    const dot = head.createEl("button", {
+      cls: `rm-project-dot rm-project-dot--${projectClass(project)}`,
+      attr: {
+        type: "button",
+        "aria-label": `Изменить цвет проекта ${project}`,
+        title: "Изменить цвет проекта",
+      },
+    });
+    dot.style.backgroundColor = this.colorForProject(project);
+    if (project === NO_PROJECT) dot.disabled = true;
+    else dot.onclick = () => new ProjectColorModal(this.app, this, project).open();
     head.createSpan({ cls: "rm-project-title", text: project });
     head.createSpan({ cls: "rm-project-count", text: String(tasks.length) });
 
@@ -548,7 +571,7 @@ class WeekBoardView extends ItemView {
       target.dataset.project = project;
       const head = target.createDiv({ cls: "rm-project-group__head" });
       const dot = head.createSpan({ cls: `rm-project-dot rm-project-dot--${projectClass(project)}` });
-      dot.style.backgroundColor = projectColor(project);
+      dot.style.backgroundColor = this.colorForProject(project);
       head.createSpan({ cls: "rm-project-title", text: project });
       head.createSpan({ cls: "rm-project-count", text: String(tasks.length) });
       const list = target.createDiv({ cls: "rm-task-list" });
@@ -600,11 +623,22 @@ class WeekBoardView extends ItemView {
 
   async readProjects() {
     const projects = await readProjectNotes(this.app);
-    return projects.length ? projects.map((project) => project.name) : [...DEFAULT_PROJECTS];
+    return projects.length
+      ? projects
+      : DEFAULT_PROJECTS.map((name, index) => ({
+          name,
+          order: index + 1,
+          color: defaultProjectColor(name),
+        }));
   }
 
-  async createProject(name) {
+  colorForProject(project) {
+    return this.currentProjectColors?.get(project) || defaultProjectColor(project);
+  }
+
+  async createProject(name, color) {
     const cleanName = validateProjectName(name);
+    const cleanColor = normalizeProjectColor(color) || defaultProjectColor(cleanName);
     const projects = await readProjectNotes(this.app);
     const duplicate = projects.find(
       (project) => project.name.localeCompare(cleanName, "ru", { sensitivity: "accent" }) === 0
@@ -624,10 +658,27 @@ class WeekBoardView extends ItemView {
     const frontmatter = {
       tags: ["project"],
       projectOrder,
+      projectColor: cleanColor,
     };
     const content = `---\n${stringifyYaml(frontmatter)}---\n\n# ${cleanName}\n`;
     await this.app.vault.create(path, content);
     new Notice(`Проект добавлен: ${cleanName}`);
+    await this.render();
+  }
+
+  async setProjectColor(projectName, color) {
+    const cleanColor = normalizeProjectColor(color);
+    if (!cleanColor) throw new Error("Выберите корректный цвет");
+    const projects = await readProjectNotes(this.app);
+    const project = projects.find((item) => item.name === projectName);
+    if (!project) throw new Error("Файл проекта не найден");
+
+    await this.app.vault.process(project.file, (content) => {
+      const parsed = splitFrontmatter(content);
+      parsed.frontmatter.projectColor = cleanColor;
+      return `---\n${stringifyYaml(parsed.frontmatter)}---\n${parsed.body}`;
+    });
+    new Notice(`Цвет проекта изменён: ${projectName}`);
     await this.render();
   }
 
@@ -715,6 +766,7 @@ class CreateProjectModal extends Modal {
     super(app);
     this.view = view;
     this.submitting = false;
+    this.selectedColor = PROJECT_COLORS[0].value;
   }
 
   onOpen() {
@@ -743,6 +795,9 @@ class CreateProjectModal extends Modal {
       cls: "rm-create-project-error",
       attr: { role: "alert", "aria-live": "polite" },
     });
+    renderColorPicker(form, this.selectedColor, (color) => {
+      this.selectedColor = color;
+    });
 
     const actions = form.createDiv({ cls: "rm-create-project-actions" });
     const cancel = actions.createEl("button", {
@@ -763,7 +818,7 @@ class CreateProjectModal extends Modal {
       this.submitting = true;
       submit.disabled = true;
       try {
-        await this.view.createProject(input.value);
+        await this.view.createProject(input.value, this.selectedColor);
         this.close();
       } catch (caught) {
         error.textContent = caught instanceof Error ? caught.message : "Не удалось создать проект";
@@ -781,6 +836,108 @@ class CreateProjectModal extends Modal {
   onClose() {
     this.contentEl.empty();
   }
+}
+
+class ProjectColorModal extends Modal {
+  constructor(app, view, projectName) {
+    super(app);
+    this.view = view;
+    this.projectName = projectName;
+    this.selectedColor = view.colorForProject(projectName);
+    this.submitting = false;
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.addClass("rm-create-project-modal");
+    contentEl.createEl("h2", { text: `Цвет проекта «${this.projectName}»` });
+
+    const form = contentEl.createEl("form", { cls: "rm-create-project-form" });
+    renderColorPicker(form, this.selectedColor, (color) => {
+      this.selectedColor = color;
+    });
+    const error = form.createDiv({
+      cls: "rm-create-project-error",
+      attr: { role: "alert", "aria-live": "polite" },
+    });
+    const actions = form.createDiv({ cls: "rm-create-project-actions" });
+    const cancel = actions.createEl("button", {
+      text: "Отмена",
+      attr: { type: "button" },
+    });
+    cancel.onclick = () => this.close();
+    const submit = actions.createEl("button", {
+      cls: "mod-cta",
+      text: "Сохранить",
+      attr: { type: "submit" },
+    });
+
+    form.onsubmit = async (event) => {
+      event.preventDefault();
+      if (this.submitting) return;
+      this.submitting = true;
+      submit.disabled = true;
+      try {
+        await this.view.setProjectColor(this.projectName, this.selectedColor);
+        this.close();
+      } catch (caught) {
+        error.textContent = caught instanceof Error ? caught.message : "Не удалось изменить цвет";
+      } finally {
+        this.submitting = false;
+        submit.disabled = false;
+      }
+    };
+  }
+
+  onClose() {
+    this.contentEl.empty();
+  }
+}
+
+function renderColorPicker(container, initialColor, onChange) {
+  container.createDiv({ cls: "rm-color-picker-label", text: "Цвет проекта" });
+  const picker = container.createDiv({ cls: "rm-color-picker" });
+  const swatches = [];
+  let selectedColor = normalizeProjectColor(initialColor) || PROJECT_COLORS[0].value;
+
+  const selectColor = (color) => {
+    selectedColor = color;
+    for (const swatch of swatches) {
+      const selected = swatch.dataset.color === selectedColor;
+      swatch.toggleClass("is-selected", selected);
+      swatch.setAttribute("aria-pressed", String(selected));
+    }
+    custom.value = selectedColor;
+    onChange(selectedColor);
+  };
+
+  for (const option of PROJECT_COLORS) {
+    const swatch = picker.createEl("button", {
+      cls: "rm-color-swatch",
+      attr: {
+        type: "button",
+        "aria-label": option.name,
+        "aria-pressed": "false",
+        title: option.name,
+      },
+    });
+    swatch.dataset.color = option.value;
+    swatch.style.backgroundColor = option.value;
+    swatch.onclick = () => selectColor(option.value);
+    swatches.push(swatch);
+  }
+
+  const customWrap = container.createDiv({ cls: "rm-custom-color" });
+  customWrap.createSpan({ text: "Свой цвет" });
+  const custom = customWrap.createEl("input", {
+    attr: {
+      type: "color",
+      value: selectedColor,
+      "aria-label": "Выбрать свой цвет",
+    },
+  });
+  custom.oninput = () => selectColor(custom.value.toLowerCase());
+  selectColor(selectedColor);
 }
 
 async function readAllTaskNotes(app) {
@@ -851,6 +1008,8 @@ async function readProjectNotes(app) {
     projects.push({
       name: cleanTitle(fm.title || file.basename),
       order: Number.isFinite(parsedOrder) ? parsedOrder : Number.MAX_SAFE_INTEGER,
+      color: normalizeProjectColor(fm.projectColor) || defaultProjectColor(file.basename),
+      file,
     });
   }
   return projects.sort(
@@ -922,6 +1081,11 @@ function validateProjectName(value) {
     throw new Error("В названии есть недопустимые символы");
   }
   return name;
+}
+
+function normalizeProjectColor(value) {
+  const color = String(value || "").trim().toLowerCase();
+  return /^#[0-9a-f]{6}$/.test(color) ? color : "";
 }
 
 function normalizeDate(value) {
@@ -1016,7 +1180,7 @@ function projectClass(project) {
   return "none";
 }
 
-function projectColor(project) {
+function defaultProjectColor(project) {
   if (project === "RareMod") return "#22c55e";
   if (project === "Личное") return "#60a5fa";
   if (project === "Parfume") return "#f59e0b";

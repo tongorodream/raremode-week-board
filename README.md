@@ -7,6 +7,7 @@ An Obsidian view for TaskNotes tasks:
 - previous/next day navigation on mobile;
 - quick task creation inside a project group;
 - project creation from the board toolbar;
+- project color selection when creating a project or by clicking its color dot;
 - completion checkboxes;
 - drag and drop on desktop;
 - on mobile, hold a task, move it onto a day arrow, then drop it into a project target.
