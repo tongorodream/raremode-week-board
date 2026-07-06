@@ -1,6 +1,7 @@
 const {
   ItemView,
   MarkdownView,
+  Modal,
   Notice,
   Platform,
   Plugin,
@@ -14,7 +15,7 @@ const {
 const VIEW_TYPE = "raremode-week-board";
 const TASKS_FOLDER = "TaskNotes/Tasks";
 const PROJECTS_FOLDER = "TaskNotes/Projects";
-const PROJECTS = ["RareMod", "Личное", "Parfume", "Traker"];
+const DEFAULT_PROJECTS = ["RareMod", "Личное", "Parfume", "Traker"];
 const NO_PROJECT = "Без проекта";
 
 module.exports = class RareModeWeekBoardPlugin extends Plugin {
@@ -145,6 +146,7 @@ class WeekBoardView extends ItemView {
 
     this.renderToolbar(root);
 
+    this.currentProjects = await this.readProjects();
     const tasks = await this.readTasks();
     this.currentTasks = tasks;
     const dates = Platform.isMobile
@@ -200,7 +202,18 @@ class WeekBoardView extends ItemView {
       ? formatLongDate(this.selectedDate)
       : `${formatShortDate(this.weekStart)} - ${formatShortDate(addDays(this.weekStart, 6))}`;
 
-    const reload = toolbar.createEl("button", { cls: "rm-icon-button", attr: { "aria-label": "Refresh" } });
+    const actions = toolbar.createDiv({ cls: "rm-toolbar__actions" });
+    const addProject = actions.createEl("button", {
+      cls: "rm-icon-button",
+      attr: { "aria-label": "Добавить проект", title: "Добавить проект" },
+    });
+    setIcon(addProject, "plus");
+    addProject.onclick = () => new CreateProjectModal(this.app, this).open();
+
+    const reload = actions.createEl("button", {
+      cls: "rm-icon-button",
+      attr: { "aria-label": "Обновить", title: "Обновить" },
+    });
     setIcon(reload, "refresh-cw");
     reload.onclick = () => this.render();
   }
@@ -214,7 +227,7 @@ class WeekBoardView extends ItemView {
     header.createDiv({ cls: "rm-day__name", text: formatWeekday(date) });
     header.createDiv({ cls: "rm-day__date", text: formatShortDate(date) });
 
-    for (const project of [...PROJECTS, NO_PROJECT]) {
+    for (const project of [...this.currentProjects, NO_PROJECT]) {
       const groupTasks = dayTasks.filter((task) => task.project === project);
       this.renderProjectGroup(day, dateKey, project, groupTasks);
     }
@@ -226,7 +239,8 @@ class WeekBoardView extends ItemView {
     group.dataset.date = dateKey;
 
     const head = group.createDiv({ cls: "rm-project-group__head" });
-    head.createSpan({ cls: `rm-project-dot rm-project-dot--${projectClass(project)}` });
+    const dot = head.createSpan({ cls: `rm-project-dot rm-project-dot--${projectClass(project)}` });
+    dot.style.backgroundColor = projectColor(project);
     head.createSpan({ cls: "rm-project-title", text: project });
     head.createSpan({ cls: "rm-project-count", text: String(tasks.length) });
 
@@ -525,7 +539,7 @@ class WeekBoardView extends ItemView {
     dayHeader.createDiv({ cls: "rm-day__name", text: formatWeekday(date) });
     dayHeader.createDiv({ cls: "rm-day__date", text: formatShortDate(date) });
 
-    for (const project of [...PROJECTS, NO_PROJECT]) {
+    for (const project of [...this.currentProjects, NO_PROJECT]) {
       const tasks = (this.currentTasks || []).filter(
         (task) => task.scheduled === dateKey && task.project === project
       );
@@ -533,7 +547,8 @@ class WeekBoardView extends ItemView {
       target.dataset.date = dateKey;
       target.dataset.project = project;
       const head = target.createDiv({ cls: "rm-project-group__head" });
-      head.createSpan({ cls: `rm-project-dot rm-project-dot--${projectClass(project)}` });
+      const dot = head.createSpan({ cls: `rm-project-dot rm-project-dot--${projectClass(project)}` });
+      dot.style.backgroundColor = projectColor(project);
       head.createSpan({ cls: "rm-project-title", text: project });
       head.createSpan({ cls: "rm-project-count", text: String(tasks.length) });
       const list = target.createDiv({ cls: "rm-task-list" });
@@ -583,7 +598,41 @@ class WeekBoardView extends ItemView {
     return tasks;
   }
 
+  async readProjects() {
+    const projects = await readProjectNotes(this.app);
+    return projects.length ? projects.map((project) => project.name) : [...DEFAULT_PROJECTS];
+  }
+
+  async createProject(name) {
+    const cleanName = validateProjectName(name);
+    const projects = await readProjectNotes(this.app);
+    const duplicate = projects.find(
+      (project) => project.name.localeCompare(cleanName, "ru", { sensitivity: "accent" }) === 0
+    );
+    if (duplicate) throw new Error("Проект с таким названием уже существует");
+
+    await ensureFolder(this.app, PROJECTS_FOLDER);
+    const path = normalizePath(`${PROJECTS_FOLDER}/${cleanName}.md`);
+    if (this.app.vault.getAbstractFileByPath(path)) {
+      throw new Error("Файл проекта с таким названием уже существует");
+    }
+
+    const projectOrder = projects.reduce(
+      (maximum, project) => Math.max(maximum, project.order),
+      0
+    ) + 1;
+    const frontmatter = {
+      tags: ["project"],
+      projectOrder,
+    };
+    const content = `---\n${stringifyYaml(frontmatter)}---\n\n# ${cleanName}\n`;
+    await this.app.vault.create(path, content);
+    new Notice(`Проект добавлен: ${cleanName}`);
+    await this.render();
+  }
+
   async createTask(title, scheduled, project) {
+    await ensureFolder(this.app, TASKS_FOLDER);
     const filename = await this.nextTaskPath(title);
     const now = new Date().toISOString();
     const fm = {
@@ -661,6 +710,79 @@ class WeekBoardView extends ItemView {
   }
 }
 
+class CreateProjectModal extends Modal {
+  constructor(app, view) {
+    super(app);
+    this.view = view;
+    this.submitting = false;
+  }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.addClass("rm-create-project-modal");
+    contentEl.createEl("h2", { text: "Новый проект" });
+
+    const form = contentEl.createEl("form", { cls: "rm-create-project-form" });
+    const label = form.createEl("label", {
+      cls: "rm-create-project-label",
+      text: "Название проекта",
+      attr: { for: "rm-create-project-name" },
+    });
+    const input = form.createEl("input", {
+      cls: "rm-create-project-input",
+      attr: {
+        id: "rm-create-project-name",
+        type: "text",
+        maxlength: "80",
+        autocomplete: "off",
+        enterkeyhint: "done",
+      },
+    });
+    label.htmlFor = input.id;
+    const error = form.createDiv({
+      cls: "rm-create-project-error",
+      attr: { role: "alert", "aria-live": "polite" },
+    });
+
+    const actions = form.createDiv({ cls: "rm-create-project-actions" });
+    const cancel = actions.createEl("button", {
+      text: "Отмена",
+      attr: { type: "button" },
+    });
+    cancel.onclick = () => this.close();
+    const submit = actions.createEl("button", {
+      cls: "mod-cta",
+      text: "Добавить",
+      attr: { type: "submit" },
+    });
+
+    form.onsubmit = async (event) => {
+      event.preventDefault();
+      if (this.submitting) return;
+      error.empty();
+      this.submitting = true;
+      submit.disabled = true;
+      try {
+        await this.view.createProject(input.value);
+        this.close();
+      } catch (caught) {
+        error.textContent = caught instanceof Error ? caught.message : "Не удалось создать проект";
+        input.focus();
+        input.select();
+      } finally {
+        this.submitting = false;
+        submit.disabled = false;
+      }
+    };
+
+    window.setTimeout(() => input.focus(), 50);
+  }
+
+  onClose() {
+    this.contentEl.empty();
+  }
+}
+
 async function readAllTaskNotes(app) {
   const tasks = [];
   for (const file of taskNoteFiles(app)) {
@@ -701,6 +823,7 @@ async function readTaskFrontmatter(app, file) {
 }
 
 async function createTaskNote(app, title, scheduled, project, options = {}) {
+  await ensureFolder(app, TASKS_FOLDER);
   const filename = await nextTaskPath(app, title);
   const now = new Date().toISOString();
   const fm = {
@@ -717,6 +840,29 @@ async function createTaskNote(app, title, scheduled, project, options = {}) {
   if (options.rollover) fm.rollover = true;
   const content = `---\n${stringifyYaml(fm)}---\n\n`;
   await app.vault.create(filename, content);
+}
+
+async function readProjectNotes(app) {
+  const projects = [];
+  for (const file of projectNoteFiles(app)) {
+    const fm = await readTaskFrontmatter(app, file);
+    if (!isProjectFrontmatter(fm)) continue;
+    const parsedOrder = Number(fm.projectOrder);
+    projects.push({
+      name: cleanTitle(fm.title || file.basename),
+      order: Number.isFinite(parsedOrder) ? parsedOrder : Number.MAX_SAFE_INTEGER,
+    });
+  }
+  return projects.sort(
+    (a, b) => a.order - b.order || a.name.localeCompare(b.name, "ru", { sensitivity: "base" })
+  );
+}
+
+function projectNoteFiles(app) {
+  const folderPrefix = `${PROJECTS_FOLDER}/`;
+  return app.vault
+    .getMarkdownFiles()
+    .filter((file) => file.path.startsWith(folderPrefix));
 }
 
 async function nextTaskPath(app, title) {
@@ -751,6 +897,33 @@ function isTaskFrontmatter(fm) {
   return tags.map((tag) => String(tag).replace(/^#/, "")).includes("task");
 }
 
+function isProjectFrontmatter(fm) {
+  const tags = Array.isArray(fm.tags) ? fm.tags : typeof fm.tags === "string" ? [fm.tags] : [];
+  return tags.map((tag) => String(tag).replace(/^#/, "")).includes("project");
+}
+
+async function ensureFolder(app, folderPath) {
+  const normalized = normalizePath(folderPath);
+  const segments = normalized.split("/");
+  let current = "";
+  for (const segment of segments) {
+    current = current ? `${current}/${segment}` : segment;
+    if (!app.vault.getAbstractFileByPath(current)) {
+      await app.vault.createFolder(current);
+    }
+  }
+}
+
+function validateProjectName(value) {
+  const name = String(value || "").trim().replace(/\s+/g, " ");
+  if (!name) throw new Error("Введите название проекта");
+  if (name.length > 80) throw new Error("Название должно быть не длиннее 80 символов");
+  if (name === "." || name === ".." || /[\\/:*?"<>|#^[\]]/.test(name)) {
+    throw new Error("В названии есть недопустимые символы");
+  }
+  return name;
+}
+
 function normalizeDate(value) {
   if (!value) return "";
   return String(value).slice(0, 10);
@@ -759,7 +932,7 @@ function normalizeDate(value) {
 function normalizeProject(projects) {
   const list = Array.isArray(projects) ? projects : projects ? [projects] : [];
   const labels = list.map((project) => projectLabel(project)).filter(Boolean);
-  return PROJECTS.find((project) => labels.includes(project)) || NO_PROJECT;
+  return labels[0] || NO_PROJECT;
 }
 
 function projectLabel(project) {
@@ -841,6 +1014,18 @@ function projectClass(project) {
   if (project === "Parfume") return "parfume";
   if (project === "Traker") return "traker";
   return "none";
+}
+
+function projectColor(project) {
+  if (project === "RareMod") return "#22c55e";
+  if (project === "Личное") return "#60a5fa";
+  if (project === "Parfume") return "#f59e0b";
+  if (project === "Traker") return "#a78bfa";
+  if (project === NO_PROJECT) return "#9ca3af";
+  const colors = ["#14b8a6", "#ec4899", "#eab308", "#06b6d4", "#f97316", "#8b5cf6"];
+  let hash = 0;
+  for (const character of project) hash = (hash * 31 + character.codePointAt(0)) >>> 0;
+  return colors[hash % colors.length];
 }
 
 function taskSort(a, b) {

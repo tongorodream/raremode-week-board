@@ -31,8 +31,11 @@
   font-weight: 700;
 }
 
-.rm-toolbar > .rm-icon-button:last-child {
+.rm-toolbar__actions {
+  display: flex;
+  gap: 6px;
   justify-self: end;
+  margin-right: 92px;
 }
 
 .rm-icon-button,
@@ -45,10 +48,23 @@
   display: inline-flex;
   height: 30px;
   justify-content: center;
+  transition: background-color 150ms ease, border-color 150ms ease;
 }
 
 .rm-icon-button {
+  cursor: pointer;
   width: 32px;
+}
+
+.rm-icon-button:hover,
+.rm-text-button:hover {
+  background: var(--background-modifier-active-hover);
+}
+
+.rm-icon-button:focus-visible,
+.rm-text-button:focus-visible {
+  box-shadow: 0 0 0 2px var(--background-modifier-border-focus);
+  outline: none;
 }
 
 .rm-text-button {
@@ -222,6 +238,40 @@
   box-shadow: none;
 }
 
+.rm-create-project-modal h2 {
+  margin-bottom: 18px;
+}
+
+.rm-create-project-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.rm-create-project-label {
+  color: var(--text-normal);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.rm-create-project-input {
+  min-height: 40px;
+  width: 100%;
+}
+
+.rm-create-project-error {
+  color: var(--text-error);
+  font-size: 12px;
+  min-height: 18px;
+}
+
+.rm-create-project-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 6px;
+}
+
 @media (max-width: 700px) {
   .rm-week-board {
     padding: 8px;
@@ -260,9 +310,23 @@
     justify-self: center;
   }
 
-  .rm-toolbar > .rm-icon-button:last-child {
+  .rm-toolbar__actions {
+    gap: 8px;
+    margin-right: 0;
+  }
+
+  .rm-toolbar__actions .rm-icon-button {
     height: 44px;
     width: 44px;
+  }
+
+  .rm-create-project-input {
+    font-size: 16px;
+    min-height: 48px;
+  }
+
+  .rm-create-project-actions button {
+    min-height: 44px;
   }
 
   .rm-board-grid,

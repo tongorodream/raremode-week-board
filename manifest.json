@@ -1,9 +1,9 @@
 {
   "id": "raremode-week-board",
   "name": "RareMode Week Board",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "minAppVersion": "1.5.0",
-  "description": "Weekly project-grouped board for TaskNotes tasks.",
+  "description": "Weekly project-grouped board for TaskNotes-compatible tasks.",
   "author": "tongorodream",
   "isDesktopOnly": false
 }
