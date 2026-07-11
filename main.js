@@ -705,7 +705,7 @@ class WeekBoardView extends ItemView {
 
   async nextTaskPath(title) {
     const base = sanitizeFilename(title) || "Новая задача";
-    const suffix = new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14);
+    const suffix = uniqueTaskSuffix();
     let path = normalizePath(`${TASKS_FOLDER}/${base}-${suffix}.md`);
     let index = 2;
     while (this.app.vault.getAbstractFileByPath(path) || await this.app.vault.adapter.exists(path)) {
@@ -716,16 +716,26 @@ class WeekBoardView extends ItemView {
   }
 
   async createUniqueFile(path, content) {
+    let currentPath = path;
     try {
-      await this.app.vault.create(path, content);
+      await this.app.vault.create(currentPath, content);
     } catch (error) {
-      if (!String(error?.message || error).includes("File already exists")) {
+      if (!isAlreadyExistsError(error)) {
         throw error;
       }
-      const fallbackPath = normalizePath(
-        `${TASKS_FOLDER}/task-${Date.now()}-${Math.random().toString(16).slice(2)}.md`
-      );
-      await this.app.vault.create(fallbackPath, content);
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        currentPath = normalizePath(`${TASKS_FOLDER}/task-${uniqueTaskSuffix()}-${attempt + 1}.md`);
+        if (this.app.vault.getAbstractFileByPath(currentPath) || await this.app.vault.adapter.exists(currentPath)) {
+          continue;
+        }
+        try {
+          await this.app.vault.create(currentPath, content);
+          return;
+        } catch (retryError) {
+          if (!isAlreadyExistsError(retryError)) throw retryError;
+        }
+      }
+      throw error;
     }
   }
 
@@ -1043,7 +1053,7 @@ function projectNoteFiles(app) {
 
 async function nextTaskPath(app, title) {
   const base = sanitizeFilename(title) || "New task";
-  const suffix = new Date().toISOString().replace(/[-:.TZ]/g, "").slice(0, 14);
+  const suffix = uniqueTaskSuffix();
   let path = normalizePath(`${TASKS_FOLDER}/${base}-${suffix}.md`);
   let index = 2;
   while (app.vault.getAbstractFileByPath(path) || await app.vault.adapter.exists(path)) {
@@ -1054,17 +1064,36 @@ async function nextTaskPath(app, title) {
 }
 
 async function createUniqueTaskNoteFile(app, path, content) {
+  let currentPath = path;
   try {
-    await app.vault.create(path, content);
+    await app.vault.create(currentPath, content);
   } catch (error) {
-    if (!String(error?.message || error).includes("File already exists")) {
+    if (!isAlreadyExistsError(error)) {
       throw error;
     }
-    const fallbackPath = normalizePath(
-      `${TASKS_FOLDER}/task-${Date.now()}-${Math.random().toString(16).slice(2)}.md`
-    );
-    await app.vault.create(fallbackPath, content);
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      currentPath = normalizePath(`${TASKS_FOLDER}/task-${uniqueTaskSuffix()}-${attempt + 1}.md`);
+      if (app.vault.getAbstractFileByPath(currentPath) || await app.vault.adapter.exists(currentPath)) {
+        continue;
+      }
+      try {
+        await app.vault.create(currentPath, content);
+        return;
+      } catch (retryError) {
+        if (!isAlreadyExistsError(retryError)) throw retryError;
+      }
+    }
+    throw error;
   }
+}
+
+function uniqueTaskSuffix() {
+  return `${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+}
+
+function isAlreadyExistsError(error) {
+  const message = String(error?.message || error || "").toLowerCase();
+  return message.includes("already") || message.includes("exists") || message.includes("eexist");
 }
 
 function splitFrontmatter(content) {
