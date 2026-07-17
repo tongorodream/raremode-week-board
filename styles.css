@@ -34,8 +34,11 @@
 .rm-toolbar__actions {
   display: flex;
   gap: 6px;
+  grid-column: 1 / -1;
+  grid-row: 2;
   justify-self: end;
-  margin-right: 92px;
+  margin-right: 0;
+  margin-top: 2px;
 }
 
 .rm-icon-button,
@@ -114,11 +117,13 @@
 
 .rm-project-group {
   border-bottom: 1px solid color-mix(in srgb, var(--rm-border) 65%, transparent);
+  border-radius: 6px;
   padding: 7px;
 }
 
 .rm-project-group.is-drop-target {
   background: color-mix(in srgb, var(--rm-accent) 12%, transparent);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--rm-accent) 55%, transparent);
 }
 
 .rm-project-group__head {
@@ -182,6 +187,27 @@
   white-space: nowrap;
 }
 
+.rm-project-title-button {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  font: inherit;
+  justify-self: start;
+  padding: 0;
+  text-align: left;
+}
+
+.rm-project-title-button:hover:not(:disabled),
+.rm-project-title-button:focus-visible {
+  color: var(--text-normal);
+  outline: none;
+}
+
+.rm-project-title-button:disabled {
+  cursor: default;
+}
+
 .rm-project-count {
   color: var(--text-faint);
   font-size: 11px;
@@ -201,7 +227,7 @@
   border-radius: 6px;
   display: grid;
   gap: 6px;
-  grid-template-columns: 18px 1fr;
+  grid-template-columns: 18px 1fr 18px;
   min-height: 30px;
   padding: 5px 7px;
   touch-action: pan-y;
@@ -213,6 +239,15 @@
 
 .rm-task.is-dragging {
   opacity: 0.55;
+}
+
+.rm-task-drop-marker {
+  background: color-mix(in srgb, var(--rm-accent) 70%, transparent);
+  border-radius: 999px;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--rm-accent) 14%, transparent);
+  height: 3px;
+  margin: 1px 4px;
+  pointer-events: none;
 }
 
 .rm-task.is-done .rm-task__title {
@@ -232,6 +267,36 @@
   font-size: 12px;
   line-height: 1.25;
   overflow-wrap: anywhere;
+}
+
+.rm-task__delete {
+  align-items: center;
+  appearance: none;
+  background: transparent;
+  border: 0;
+  border-radius: 999px;
+  color: var(--text-faint);
+  cursor: pointer;
+  display: inline-flex;
+  height: 18px;
+  justify-content: center;
+  opacity: 0.22;
+  padding: 0;
+  transition: background-color 140ms ease, color 140ms ease, opacity 140ms ease;
+  width: 18px;
+}
+
+.rm-task:hover .rm-task__delete,
+.rm-task:focus-within .rm-task__delete {
+  opacity: 0.44;
+}
+
+.rm-task__delete:hover,
+.rm-task__delete:focus-visible {
+  background: color-mix(in srgb, var(--text-error) 7%, transparent);
+  color: var(--text-error);
+  opacity: 0.82;
+  outline: none;
 }
 
 .rm-new-task {
@@ -384,7 +449,10 @@
 
   .rm-toolbar__actions {
     gap: 8px;
+    grid-column: auto;
+    grid-row: auto;
     margin-right: 0;
+    margin-top: 0;
   }
 
   .rm-toolbar__actions .rm-icon-button {
@@ -451,7 +519,7 @@
   .rm-task {
     -webkit-touch-callout: none;
     gap: 10px;
-    grid-template-columns: 28px 1fr;
+    grid-template-columns: 28px 1fr 30px;
     min-height: 48px;
     padding: 8px 10px;
     transition: border-color 150ms ease, opacity 150ms ease;
@@ -465,6 +533,12 @@
   .rm-task__title {
     font-size: 16px;
     line-height: 1.35;
+  }
+
+  .rm-task__delete {
+    height: 30px;
+    opacity: 0.52;
+    width: 30px;
   }
 
   .rm-new-task {

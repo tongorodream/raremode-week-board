@@ -1,6 +1,7 @@
 const {
   ItemView,
   MarkdownView,
+  Menu,
   Modal,
   Notice,
   Platform,
@@ -154,13 +155,16 @@ class WeekBoardView extends ItemView {
     root.empty();
     root.addClass("rm-week-board");
 
-    this.renderToolbar(root);
-
     const projects = await this.readProjects();
-    this.currentProjects = projects.map((project) => project.name);
+    this.allProjects = projects;
+    this.hiddenProjects = projects.filter((project) => project.hidden);
+    const visibleProjects = projects.filter((project) => !project.hidden);
+    this.currentProjects = visibleProjects.map((project) => project.name);
     this.currentProjectColors = new Map(
       projects.map((project) => [project.name, project.color])
     );
+    this.renderToolbar(root);
+
     const tasks = await this.readTasks();
     this.currentTasks = tasks;
     const dates = Platform.isMobile
@@ -224,6 +228,15 @@ class WeekBoardView extends ItemView {
     setIcon(addProject, "plus");
     addProject.onclick = () => new CreateProjectModal(this.app, this).open();
 
+    if (this.allProjects?.length) {
+      const hiddenProjects = actions.createEl("button", {
+        cls: "rm-icon-button",
+        attr: { "aria-label": "Скрытые проекты", title: "Скрытые проекты" },
+      });
+      setIcon(hiddenProjects, "list-filter");
+      hiddenProjects.onclick = (event) => this.openProjectsMenu(event);
+    }
+
     const reload = actions.createEl("button", {
       cls: "rm-icon-button",
       attr: { "aria-label": "Обновить", title: "Обновить" },
@@ -251,6 +264,23 @@ class WeekBoardView extends ItemView {
     const group = day.createDiv({ cls: "rm-project-group" });
     group.dataset.project = project;
     group.dataset.date = dateKey;
+    group.ondragover = (event) => {
+      event.preventDefault();
+      group.addClass("is-drop-target");
+      this.updateTaskDropPreview(event, group);
+    };
+    group.ondragleave = (event) => {
+      if (!group.contains(event.relatedTarget)) {
+        group.removeClass("is-drop-target");
+        this.clearTaskDropPreview();
+      }
+    };
+    group.ondrop = async (event) => {
+      event.preventDefault();
+      group.removeClass("is-drop-target");
+      await this.handleTaskDrop(event, dateKey, project);
+      this.clearTaskDropPreview();
+    };
 
     const head = group.createDiv({ cls: "rm-project-group__head" });
     const dot = head.createEl("button", {
@@ -268,21 +298,8 @@ class WeekBoardView extends ItemView {
     head.createSpan({ cls: "rm-project-count", text: String(tasks.length) });
 
     const list = group.createDiv({ cls: "rm-task-list" });
-    list.ondragover = (event) => {
-      event.preventDefault();
-      group.addClass("is-drop-target");
-    };
-    list.ondragleave = () => group.removeClass("is-drop-target");
-    list.ondrop = async (event) => {
-      event.preventDefault();
-      group.removeClass("is-drop-target");
-      if (this.draggedPath) {
-        await this.moveTask(this.draggedPath, dateKey, project);
-        this.draggedPath = null;
-      }
-    };
 
-    for (const task of tasks.sort(taskSort)) {
+    for (const task of [...tasks].sort(taskSort)) {
       this.renderTask(list, task);
     }
 
@@ -329,11 +346,14 @@ class WeekBoardView extends ItemView {
     card.toggleClass("is-done", task.done);
     card.ondragstart = () => {
       this.draggedPath = task.path;
+      this.draggedTask = task;
       card.addClass("is-dragging");
     };
     card.ondragend = () => {
       this.draggedPath = null;
+      this.draggedTask = null;
       card.removeClass("is-dragging");
+      this.clearTaskDropPreview();
     };
     if (Platform.isMobile) this.registerTouchDrag(card, task);
 
@@ -350,6 +370,23 @@ class WeekBoardView extends ItemView {
     title.onclick = () => {
       if (Date.now() < this.suppressClickUntil) return;
       this.openTask(task.path);
+    };
+
+    const deleteButton = card.createEl("button", {
+      cls: "rm-task__delete",
+      attr: {
+        type: "button",
+        "aria-label": `Удалить задачу: ${task.title}`,
+        title: "Удалить задачу",
+      },
+    });
+    setIcon(deleteButton, "x");
+    deleteButton.querySelector("svg")?.setAttribute("width", "12");
+    deleteButton.querySelector("svg")?.setAttribute("height", "12");
+    deleteButton.onclick = async (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      await this.deleteTask(task);
     };
   }
 
@@ -450,7 +487,10 @@ class WeekBoardView extends ItemView {
         return;
       }
       if (targetDate === task.scheduled && targetProject === task.project) return;
-      await this.moveTask(task.path, targetDate, targetProject);
+      const ordered = (this.currentTasks || [])
+        .filter((item) => item.path !== task.path && item.scheduled === targetDate && item.project === targetProject)
+        .sort(taskSort);
+      await this.moveTask(task.path, targetDate, targetProject, orderBetween(ordered.at(-1), null));
       this.selectedDate = fromDateKey(targetDate);
       new Notice(`Задача перенесена: ${formatShortDate(this.selectedDate)}, ${targetProject}`);
       await this.render();
@@ -575,7 +615,7 @@ class WeekBoardView extends ItemView {
       head.createSpan({ cls: "rm-project-title", text: project });
       head.createSpan({ cls: "rm-project-count", text: String(tasks.length) });
       const list = target.createDiv({ cls: "rm-task-list" });
-      for (const task of tasks.sort(taskSort)) {
+      for (const task of [...tasks].sort(taskSort)) {
         const preview = list.createDiv({ cls: "rm-task rm-task--drop-preview" });
         preview.toggleClass("is-done", task.done);
         const checkbox = preview.createEl("input", {
@@ -615,6 +655,7 @@ class WeekBoardView extends ItemView {
         done: String(fm.status || "open") === "done",
         rollover: fm.rollover === true || String(fm.rollover || "").toLowerCase() === "true",
         priority: String(fm.priority || "none"),
+        order: Number.isFinite(Number(fm.taskOrder)) ? Number(fm.taskOrder) : file.stat.mtime,
         modified: file.stat.mtime,
       });
     }
@@ -629,6 +670,7 @@ class WeekBoardView extends ItemView {
           name,
           order: index + 1,
           color: defaultProjectColor(name),
+          hidden: false,
         }));
   }
 
@@ -659,6 +701,7 @@ class WeekBoardView extends ItemView {
       tags: ["project"],
       projectOrder,
       projectColor: cleanColor,
+      projectHidden: false,
     };
     const content = `---\n${stringifyYaml(frontmatter)}---\n\n# ${cleanName}\n`;
     await this.app.vault.create(path, content);
@@ -682,6 +725,159 @@ class WeekBoardView extends ItemView {
     await this.render();
   }
 
+  openProjectMenu(event, project) {
+    const menu = new Menu();
+    menu.addItem((item) => {
+      item
+        .setTitle("Изменить цвет")
+        .setIcon("palette")
+        .onClick(() => new ProjectColorModal(this.app, this, project).open());
+    });
+    menu.addItem((item) => {
+      item
+        .setTitle("Скрыть проект")
+        .setIcon("eye-off")
+        .onClick(() => this.setProjectHidden(project, true));
+    });
+    menu.showAtMouseEvent(event);
+  }
+
+  openHiddenProjectsMenu(event) {
+    const menu = new Menu();
+    for (const project of this.hiddenProjects || []) {
+      menu.addItem((item) => {
+        item
+          .setTitle(`Показать: ${project.name}`)
+          .setIcon("eye")
+          .onClick(() => this.setProjectHidden(project.name, false));
+      });
+    }
+    menu.showAtMouseEvent(event);
+  }
+
+  openProjectsMenu(event) {
+    const menu = new Menu();
+    const projects = this.allProjects || [];
+    projects.forEach((project, index) => {
+      menu.addItem((item) => {
+        item
+          .setTitle(project.hidden ? `Показать: ${project.name}` : `Скрыть: ${project.name}`)
+          .setIcon(project.hidden ? "eye" : "eye-off")
+          .onClick(() => this.setProjectHidden(project.name, !project.hidden));
+      });
+      menu.addItem((item) => {
+        item
+          .setTitle(`Цвет: ${project.name}`)
+          .setIcon("palette")
+          .onClick(() => new ProjectColorModal(this.app, this, project.name).open());
+      });
+      if (index < projects.length - 1) menu.addSeparator?.();
+    });
+    menu.showAtMouseEvent(event);
+  }
+
+  async setProjectHidden(projectName, hidden) {
+    const projects = await readProjectNotes(this.app);
+    const project = projects.find((item) => item.name === projectName);
+    if (!project) throw new Error("Файл проекта не найден");
+
+    await this.app.vault.process(project.file, (content) => {
+      const parsed = splitFrontmatter(content);
+      if (hidden) parsed.frontmatter.projectHidden = true;
+      else delete parsed.frontmatter.projectHidden;
+      return `---\n${stringifyYaml(parsed.frontmatter)}---\n${parsed.body}`;
+    });
+    new Notice(hidden ? `Проект скрыт: ${projectName}` : `Проект показан: ${projectName}`);
+    await this.render();
+  }
+
+  updateTaskDropPreview(event, group) {
+    if (!this.draggedPath) return;
+    const list = group.querySelector(".rm-task-list");
+    if (!list) return;
+
+    const { targetCard, after } = this.getTaskDropTarget(event, list);
+    let marker = this.taskDropMarker;
+    if (!marker || !marker.isConnected) {
+      marker = document.createElement("div");
+      marker.addClass("rm-task-drop-marker");
+      this.taskDropMarker = marker;
+    }
+
+    if (targetCard) {
+      if (after) targetCard.after(marker);
+      else targetCard.before(marker);
+    } else {
+      list.appendChild(marker);
+    }
+
+    this.taskDropPreview = {
+      dateKey: group.dataset.date,
+      project: group.dataset.project,
+      targetPath: targetCard?.dataset.path || null,
+      after,
+    };
+  }
+
+  clearTaskDropPreview() {
+    this.taskDropMarker?.remove();
+    this.taskDropMarker = null;
+    this.taskDropPreview = null;
+  }
+
+  getTaskDropTarget(event, list) {
+    const cards = [...list.querySelectorAll(".rm-task:not(.is-dragging)")];
+    const targetCard = event.target?.closest?.(".rm-task:not(.is-dragging)");
+    if (targetCard && list.contains(targetCard)) {
+      const rect = targetCard.getBoundingClientRect();
+      return {
+        targetCard,
+        after: event.clientY > rect.top + rect.height / 2,
+      };
+    }
+
+    for (const card of cards) {
+      const rect = card.getBoundingClientRect();
+      if (event.clientY < rect.top + rect.height / 2) {
+        return { targetCard: card, after: false };
+      }
+    }
+    return { targetCard: cards.at(-1) || null, after: true };
+  }
+
+  async handleTaskDrop(event, dateKey, project) {
+    const dragged = this.draggedTask || (this.currentTasks || []).find((task) => task.path === this.draggedPath);
+    if (!dragged) return;
+
+    const list = event.currentTarget.querySelector(".rm-task-list");
+    if (!list) return;
+    const dropTarget = this.taskDropPreview?.dateKey === dateKey && this.taskDropPreview?.project === project
+      ? this.taskDropPreview
+      : (() => {
+          const { targetCard, after } = this.getTaskDropTarget(event, list);
+          return { targetPath: targetCard?.dataset.path || null, after };
+        })();
+    const targetPath = dropTarget.targetPath;
+    const ordered = (this.currentTasks || [])
+      .filter((task) => task.path !== dragged.path && task.scheduled === dateKey && task.project === project)
+      .sort(taskSort);
+
+    let insertIndex = ordered.length;
+    if (targetPath) {
+      const targetIndex = ordered.findIndex((task) => task.path === targetPath);
+      if (targetIndex !== -1) {
+        insertIndex = targetIndex + (dropTarget.after ? 1 : 0);
+      }
+    }
+
+    const previous = ordered[insertIndex - 1];
+    const next = ordered[insertIndex];
+    await this.moveTask(dragged.path, dateKey, project, orderBetween(previous, next));
+    this.draggedPath = null;
+    this.draggedTask = null;
+    await this.render();
+  }
+
   async createTask(title, scheduled, project) {
     await ensureFolder(this.app, TASKS_FOLDER);
     const filename = await this.nextTaskPath(title);
@@ -693,6 +889,7 @@ class WeekBoardView extends ItemView {
       scheduled,
       dateCreated: now,
       dateModified: now,
+      taskOrder: Date.now(),
       tags: ["task"],
     };
     if (project !== NO_PROJECT) {
@@ -758,14 +955,45 @@ class WeekBoardView extends ItemView {
     });
   }
 
-  async moveTask(path, scheduled, project) {
+  async moveTask(path, scheduled, project, taskOrder = null) {
     await this.updateTaskFrontmatter(path, (fm) => {
       fm.scheduled = scheduled;
       fm.dateModified = new Date().toISOString();
+      if (Number.isFinite(taskOrder)) fm.taskOrder = taskOrder;
       if (project === NO_PROJECT) delete fm.projects;
       else fm.projects = [`[[${PROJECTS_FOLDER}/${project}|${project}]]`];
       return fm;
     });
+  }
+
+  async deleteTask(task) {
+    const file = this.app.vault.getAbstractFileByPath(task.path);
+    if (!(file instanceof TFile)) {
+      new Notice("Task file was not found");
+      await this.render();
+      return;
+    }
+    const confirmed = window.confirm(`Удалить задачу "${task.title}" из Obsidian?`);
+    if (!confirmed) return;
+    await this.app.vault.trash(file, true);
+    new Notice(`Задача удалена: ${task.title}`);
+    await this.render();
+    await this.requestLiveSyncReplication();
+  }
+
+  async requestLiveSyncReplication() {
+    const commands = this.app.commands?.commands || {};
+    const blocked = /setup|fetch|rebuild|overwrite|delete|reset|doctor|fix|garbage/i;
+    const command = Object.entries(commands).find(([id, item]) => {
+      const text = `${id} ${item?.name || ""}`;
+      return /livesync/i.test(text) && /replicat|sync now|synchroni[sz]e now/i.test(text) && !blocked.test(text);
+    });
+    if (!command) return;
+    try {
+      await this.app.commands.executeCommandById(command[0]);
+    } catch (error) {
+      console.warn("RareMode Week: LiveSync replication command failed", error);
+    }
   }
 
   async updateTaskFrontmatter(path, updater) {
@@ -984,6 +1212,7 @@ async function readAllTaskNotes(app) {
       done: String(fm.status || "open") === "done",
       rollover: fm.rollover === true || String(fm.rollover || "").toLowerCase() === "true",
       priority: String(fm.priority || "none"),
+      order: Number.isFinite(Number(fm.taskOrder)) ? Number(fm.taskOrder) : file.stat.mtime,
       modified: file.stat.mtime,
     });
   }
@@ -1016,6 +1245,7 @@ async function createTaskNote(app, title, scheduled, project, options = {}) {
     scheduled,
     dateCreated: now,
     dateModified: now,
+    taskOrder: Date.now(),
     tags: ["task"],
   };
   if (project !== NO_PROJECT) {
@@ -1036,6 +1266,7 @@ async function readProjectNotes(app) {
       name: cleanTitle(fm.title || file.basename),
       order: Number.isFinite(parsedOrder) ? parsedOrder : Number.MAX_SAFE_INTEGER,
       color: normalizeProjectColor(fm.projectColor) || defaultProjectColor(file.basename),
+      hidden: fm.projectHidden === true || String(fm.projectHidden || "").toLowerCase() === "true",
       file,
     });
   }
@@ -1254,6 +1485,22 @@ function defaultProjectColor(project) {
 }
 
 function taskSort(a, b) {
+  const orderDiff = taskOrderValue(a) - taskOrderValue(b);
+  if (Math.abs(orderDiff) > 0.0001) return orderDiff;
   if (a.done !== b.done) return a.done ? 1 : -1;
   return a.title.localeCompare(b.title, "ru");
+}
+
+function taskOrderValue(task) {
+  const value = Number(task?.order);
+  return Number.isFinite(value) ? value : Number(task?.modified || 0);
+}
+
+function orderBetween(previous, next) {
+  const previousOrder = previous ? taskOrderValue(previous) : null;
+  const nextOrder = next ? taskOrderValue(next) : null;
+  if (previousOrder !== null && nextOrder !== null) return (previousOrder + nextOrder) / 2;
+  if (previousOrder !== null) return previousOrder + 1000;
+  if (nextOrder !== null) return nextOrder - 1000;
+  return Date.now();
 }
