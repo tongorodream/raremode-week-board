@@ -251,8 +251,8 @@
 }
 
 .rm-task.is-done .rm-task__title {
-  color: var(--text-faint);
-  text-decoration: line-through;
+  color: var(--text-normal);
+  text-decoration: none;
 }
 
 .rm-task__check {
